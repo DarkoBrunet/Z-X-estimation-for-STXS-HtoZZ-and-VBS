@@ -1,0 +1,13 @@
+universe        = vanilla
+executable      = run_stage1.sh
+arguments       =
+output          = condor/stage1.$(ClusterId).$(Process).out
+error           = condor/stage1.$(ClusterId).$(Process).err
+log             = condor/stage1.$(ClusterId).log
+should_transfer_files = NO
+getenv          = True
+request_cpus    = 2
+request_memory  = 6000
+request_disk    = 4000000
++JobFlavour     = "nextweek"
+queue 1
