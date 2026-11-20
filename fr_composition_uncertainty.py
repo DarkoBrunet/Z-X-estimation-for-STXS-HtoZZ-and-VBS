@@ -9,11 +9,11 @@ Inputs: Hist_ID_ptl3_{ZZ,WZ,TT,DY50}.root from stage 1 (NanoAOD analyzeZX).
   Set VBS below to choose the input directory and output folder:
     VBS=True  -> VBS Hist_ID (nominal, ge1j and ge2j)
     VBS=False -> H->ZZ Hist_ID on EOS (latest HtoZZ stage1)
-  Both modes build a 2P2F-only CR-mix fake rate (3P1F is not used in
-  the mix). Two variants are written: noprompt (HF+LF+conv) and leftover
+  Both modes compare 2P2F, 3P1F and combined 2P2F+3P1F origin mixtures.
+  Each has two variants: noprompt (HF+LF+conv) and leftover
   prompt (WZ dropped from Z+1L; leftover prompt kept in the mix).
-  ZZ is subtracted on the 3P1F yield, not in this mix. This flag is
-  independent of analyzeZX.VBS.
+  Transfer mixtures exclude ZZ from the 3P1F contribution, matching the
+  yield subtraction. This flag is independent of analyzeZX.VBS.
 
 Z+1L MC measures origin fake rates f_i (HF, LF, conversion, and prompt).
 noprompt uses HF/LF/conversion only. leftover keeps leftover prompt after
@@ -586,46 +586,19 @@ NONPROMPT_ORIGIN_KEYS = ("Fake", "BDfake", "Conv")
 ALL_ORIGIN_KEYS = ("Fake", "BDfake", "Conv", "Prompt")
 
 
-_ODDS_FR_CAP = 0.999999
-
-
-def _origin_odds(fr):
-    """f/(1-f) of one origin FR (capped just below 1)."""
-    fr = min(max(fr, 0.0), _ODDS_FR_CAP)
-    return fr / (1.0 - fr)
-
-
-def _origin_odds_error(fr, fr_error):
-    """Error of f/(1-f): df / (1-f)^2."""
-    fr = min(max(fr, 0.0), _ODDS_FR_CAP)
-    return fr_error / ((1.0 - fr) ** 2)
-
-
-def _odds_to_effective_fr(odds):
-    """Effective FR f_eff such that f_eff/(1-f_eff) = odds."""
-    return odds / (1.0 + odds)
-
-
-# CR composition fractions c_i count the FAILING leptons of each origin.
-# Each failing lepton is weighted by F_i = f_i/(1-f_i), so the CR-mix weight
-# is the composition average of the per-origin F_i, not f/(1-f) of the
-# average f. (Z+1L F = N/(D-N) already is the failing-lepton-weighted mean
-# of F_i.) The three helpers below return the effective FR
-# f_eff = F/(1+F) with F = sum_i c_i F_i, so that f_eff/(1-f_eff) is the
-# correct CR-mix F wherever the code converts f to F afterwards.
 def _effective_cr_fr(origin_hists, composition):
     """CR-mix effective FR using only HF/LF/conversion (prompt dropped)."""
-    raw = {key: composition[key] / 100.0 for key in NONPROMPT_ORIGIN_KEYS}
-    total = sum(raw.values())
-    if total <= 0:
-        return 0.0
-    odds = 0.0
-    for key in NONPROMPT_ORIGIN_KEYS:
-        origin_fr = _integrated_ratio(
+    origin_frs = {
+        key: _integrated_ratio(
             origin_hists[key]["n"], origin_hists[key]["d"]
         )
-        odds += (raw[key] / total) * _origin_odds(origin_fr)
-    return _odds_to_effective_fr(odds)
+        for key in NONPROMPT_ORIGIN_KEYS
+    }
+    value, _ = _composition_weighted_fr(
+        composition, None, origin_frs,
+        dict.fromkeys(NONPROMPT_ORIGIN_KEYS, 0.0), NONPROMPT_ORIGIN_KEYS,
+    )
+    return value
 
 
 def _composition_weighted_fr(
@@ -633,37 +606,30 @@ def _composition_weighted_fr(
 ):
     """CR-composition effective FR for the given origin keys.
 
-    Fractions are taken from ``perc`` (percent, failing leptons) and
-    renormalized to sum to 1 over ``keys``. The CR-transfer uses
-    Fake+BD+Conv only. The mix is averaged in F=f/(1-f) space and returned
-    as f_eff = F/(1+F) (see the note above ``_effective_cr_fr``).
+    The model uses failing-lepton fractions as proxies for the CR mixture
+    and renormalizes them over ``keys``. It averages the Z+1L rates f_i
+    first. The caller converts the resulting mixed rate to odds once.
     """
     raw = {key: perc[key] / 100.0 for key in keys}
     total = sum(raw.values())
     if total <= 0:
         return 0.0, 0.0
     fractions = {key: raw[key] / total for key in keys}
-    origin_odds = {key: _origin_odds(origin_frs[key]) for key in keys}
-    odds = sum(fractions[key] * origin_odds[key] for key in keys)
-    odds_variance = sum(
-        fractions[key] ** 2
-        * _origin_odds_error(
-            origin_frs[key], math.sqrt(max(0.0, origin_fr_variances[key]))
-        ) ** 2
+    value = sum(fractions[key] * origin_frs[key] for key in keys)
+    rate_variance = sum(
+        fractions[key] ** 2 * max(0.0, origin_fr_variances[key])
         for key in keys
     )
-    # Constant-total approximation: Cov(F_i/S, F_j/S) ≈ Cov(F_i, F_j) / S^2.
-    composition_variance = sum(
-        origin_odds[key_i]
-        * origin_odds[key_j]
-        * covariance[key_i][key_j]
-        / (total * total)
-        for key_i in keys
-        for key_j in keys
-    )
-    odds_error = math.sqrt(max(0.0, odds_variance + composition_variance))
-    value = _odds_to_effective_fr(odds)
-    return value, odds_error / ((1.0 + odds) ** 2)
+    # Derivative of the renormalized mean with respect to a raw fraction.
+    derivatives = {key: (origin_frs[key] - value) / total for key in keys}
+    composition_variance = 0.0
+    if covariance is not None:
+        composition_variance = sum(
+            derivatives[key_i] * covariance[key_i][key_j] * derivatives[key_j]
+            for key_i in keys
+            for key_j in keys
+        )
+    return value, math.sqrt(max(0.0, rate_variance + composition_variance))
 
 
 def _cms_prelim(canvas):
@@ -818,6 +784,12 @@ def _draw_fr_origin_overlay(fr_prompt, fr_fake, fr_conv, fr_bdfake, region, var_
 
     leg.Draw("goff")
     _cms_prelim(c)
+    tag_label = os.path.basename(os.path.normpath(OUT_DIR))
+    category_label = ROOT.TLatex(0.18, 0.86, tag_label)
+    category_label.SetNDC()
+    category_label.SetTextFont(42)
+    category_label.SetTextSize(0.035)
+    category_label.Draw()
     out_base = "FR_%s_%s" % (var_name, region)
     c.SaveAs(os.path.join(OUT_DIR, out_base + ".pdf"))
     c.SaveAs(os.path.join(OUT_DIR, out_base + ".C"))
@@ -912,35 +884,19 @@ def _build_cr_mix(
     region,
     tag_label,
     origin_keys=None,
-    cr_treatment=None,
 ):
-    """Composition-weighted CR fake rate.
-
-    Adopted mix is 2P2F-only. origin_keys is Fake+BD+Conv (noprompt) or
-    all origins including leftover prompt.
-    """
+    """Build the integrated and per-bin transfer from the selected CR mix."""
     origin_keys = origin_keys or NONPROMPT_ORIGIN_KEYS
-    if cr_kind == "combined":
+    if cr_kind.startswith("combined"):
         section = _cr_combined_flavour_section(region)
-        default_treatment = "2P2F+3P1F, all processes, prompt dropped"
-    elif cr_kind.startswith("2P2F"):
-        section = _cr_flavour_section("2P2F", region)
-        default_treatment = "2P2F only"
-    elif cr_kind.startswith("3P1F"):
-        section = _cr_flavour_section("3P1F", region)
-        default_treatment = "3P1F only"
     else:
-        section = _cr_flavour_section(cr_kind, region)
-        default_treatment = "all processes"
-    if cr_treatment is None:
-        cr_treatment = default_treatment
-    composition, covariance = _cr_composition_with_covariance(
-        cr_files,
-        section,
-        "transfer_%s_%s_%s" % (tag_label, cr_kind, region),
-    )
-    if not composition or not covariance:
-        raise RuntimeError("Missing %s composition for %s" % (cr_kind, region))
+        section = _cr_flavour_section(cr_kind.split("_", 1)[0], region)
+    tag = "transfer_%s_%s_%s" % (tag_label, cr_kind, region)
+    histograms = _cr_transfer_origin_histograms(cr_files, section, tag)
+    composition, covariance = _cr_composition_percentages(histograms)
+    if not composition or sum(composition[key] for key in origin_keys) <= 0.0:
+        raise RuntimeError("Empty %s composition for %s" % (cr_kind, region))
+
     cr_fr = _cr_weighted_fr_curve(
         source_frs,
         composition,
@@ -967,7 +923,6 @@ def _build_cr_mix(
         "f_err": cr_error,
         "F": F_cr,
         "F_err": F_cr_error,
-        "treatment": cr_treatment,
     }
 
 
@@ -1000,113 +955,58 @@ def _origin_fr_histograms(files, region, tag):
     return output
 
 
-def _cr_composition_with_covariance(files, section, tag):
-    """CR origin percentages and covariance (supports combined sections)."""
-    if section in CR_COMBINED_SECTIONS:
-        histograms = {
-            "Fake": _clone_sum_cr_sections(
-                files, "Fake", CR_COMBINED_SECTIONS[section],
-                "crfake_%s_%s" % (tag, section),
-            ),
-            "BDfake": _clone_sum_cr_sections(
-                files, "BDfake", CR_COMBINED_SECTIONS[section],
-                "crbd_%s_%s" % (tag, section),
-            ),
-            "Conv": _clone_sum_cr_sections(
-                files, "Conv", CR_COMBINED_SECTIONS[section],
-                "crconv_%s_%s" % (tag, section),
-            ),
-            "Prompt": _clone_sum_cr_sections(
-                files, "Prom", CR_COMBINED_SECTIONS[section],
-                "crprom_%s_%s" % (tag, section),
-            ),
-        }
-    else:
-        histograms = {
-            "Fake": _clone_sum(
-                files, "h1D_m4l_Fake_" + section, "crfake_%s_%s" % (tag, section)
-            ),
-            "BDfake": _clone_sum(
-                files, "h1D_m4l_BDfake_" + section, "crbd_%s_%s" % (tag, section)
-            ),
-            "Conv": _clone_sum(
-                files, "h1D_m4l_Conv_" + section, "crconv_%s_%s" % (tag, section)
-            ),
-            "Prompt": _clone_sum(
-                files, "h1D_m4l_Prom_" + section, "crprom_%s_%s" % (tag, section)
-            ),
-        }
-    if not all(histograms.values()):
-        return None, None
+def _cr_transfer_origin_histograms(files, section, tag):
+    """Pool transfer inputs in units of weighted failing leptons."""
+    sections = CR_COMBINED_SECTIONS[section]
+    pooled = section in ("electron", "muon")
+    histograms = {}
+    for origin in ALL_ORIGIN_KEYS:
+        hist_origin = "Prom" if origin == "Prompt" else origin
+        pieces = []
+        for kind in ("2P2F", "3P1F"):
+            splits = [item for item in sections if item.startswith(kind)]
+            if not splits:
+                continue
+            samples = _files_excluding(files, ("ZZ",)) if kind == "3P1F" else files
+            name = "%s_%s_%s" % (tag, origin, kind)
+            hist = _clone_sum_cr_sections(samples, hist_origin, splits, name)
+            if not hist:
+                raise RuntimeError("Missing CR origin histogram for " + name)
+            # The legacy m4l inputs fill each 2P2F lepton with half weight.
+            if pooled and kind == "2P2F":
+                hist.Scale(2.0)
+            pieces.append(hist)
+        histograms[origin] = _add_histograms(pieces, "%s_%s" % (tag, origin))
+    return histograms
+
+
+def _cr_composition_percentages(histograms):
     fractions, covariance = _weighted_composition(histograms)
     if fractions is None:
         return None, None
-    percentages = {key: 100.0 * fractions[key] for key in fractions}
-    return percentages, covariance
+    return {key: 100.0 * value for key, value in fractions.items()}, covariance
 
 
-def _cr_composition_percentages(files, section, tag):
-    """CR origin percentages for a section (supports combined 2P2Fe/…)."""
-    percentages, _covariance = _cr_composition_with_covariance(
-        files, section, tag
-    )
-    return percentages
-
-
-def _cr_weighted_fr_curve(
-    fr_by_origin, perc, keys, out_name, covariance=None
-):
-    """Apply constant CR composition weights to per-bin origin FRs.
-
-    The CR fractions count failing leptons, so each pT bin is averaged in
-    F=f/(1-f) space and stored as the effective FR f_eff = F/(1+F)
-    (f_eff/(1-f_eff) is then the correct CR-mix F).
-    The CR fractions are integrated over m4l and therefore constant in pT.
-    When supplied, ``covariance`` propagates their common statistical
-    uncertainty into each pT bin.
-    """
-    raw = {key: perc[key] / 100.0 for key in keys}
-    total = sum(raw.values())
-    if total <= 0:
-        return None
-    weights = {key: raw[key] / total for key in keys}
-    template = None
-    for key in keys:
-        if fr_by_origin.get(key) is not None:
-            template = fr_by_origin[key]
-            break
+def _cr_weighted_fr_curve(fr_by_origin, perc, keys, out_name, covariance=None):
+    """Average each bin's origin rates using the flavour-pooled CR mix."""
+    template = next((fr_by_origin[key] for key in keys if fr_by_origin.get(key)), None)
     if template is None:
         return None
     out = template.Clone(out_name)
     out.Reset("ICES")
     out.SetDirectory(0)
     for ibin in range(1, out.GetNbinsX() + 1):
-        odds = 0.0
-        err2 = 0.0
+        origin_frs = {}
+        origin_variances = {}
         for key in keys:
             hist = fr_by_origin.get(key)
-            if not hist:
-                continue
-            odds += weights[key] * _origin_odds(hist.GetBinContent(ibin))
-            err2 += (
-                weights[key]
-                * _origin_odds_error(
-                    hist.GetBinContent(ibin), hist.GetBinError(ibin)
-                )
-            ) ** 2
-        if covariance is not None:
-            err2 += sum(
-                _origin_odds(fr_by_origin[key_i].GetBinContent(ibin))
-                * _origin_odds(fr_by_origin[key_j].GetBinContent(ibin))
-                * covariance[key_i][key_j]
-                / (total * total)
-                for key_i in keys
-                for key_j in keys
-            )
-        out.SetBinContent(ibin, _odds_to_effective_fr(odds))
-        out.SetBinError(
-            ibin, math.sqrt(max(0.0, err2)) / ((1.0 + odds) ** 2)
+            origin_frs[key] = hist.GetBinContent(ibin) if hist else 0.0
+            origin_variances[key] = hist.GetBinError(ibin) ** 2 if hist else 0.0
+        value, error = _composition_weighted_fr(
+            perc, covariance, origin_frs, origin_variances, keys
         )
+        out.SetBinContent(ibin, value)
+        out.SetBinError(ibin, error)
     return out
 
 
@@ -1268,7 +1168,10 @@ def _draw_vbs_transfer_curves(region, styled):
     leg.SetFillStyle(0)
     leg.SetTextFont(42)
     leg.SetTextSize(0.024)
-    leg.SetHeader(ANALYSIS_MODE + ", " + FR_REGION_LABELS[region])
+    tag_label = os.path.basename(os.path.normpath(OUT_DIR))
+    leg.SetHeader(
+        "%s [%s], %s" % (ANALYSIS_MODE, tag_label, FR_REGION_LABELS[region])
+    )
     ymax = max(
         hist.GetBinContent(ibin) + hist.GetBinError(ibin)
         for hist, _color, _marker, _label in styled
@@ -1359,7 +1262,7 @@ def _draw_vbs_transfer_ratio(region, kappa_2p2f, kappa_3p1f):
     c.SaveAs(os.path.join(OUT_DIR, out_base + ".root"))
 
 
-def _draw_vbs_data_band(region, cr_kind, data_fr, band):
+def _draw_vbs_data_band(region, cr_kind, tag_label, data_fr, band):
     """Draw the unchanged data FR with the CR-transfer systematic envelope."""
     c = _style_canvas("c_FR_data_band_%s_%s" % (cr_kind, region))
     frame = data_fr.Clone("frame_FR_data_band_%s_%s" % (cr_kind, region))
@@ -1386,7 +1289,7 @@ def _draw_vbs_data_band(region, cr_kind, data_fr, band):
     frame.SetMaximum(max(1.45 * ymax, 0.02))
     frame.Draw("axis")
 
-    color = ROOT.kBlue + 1 if cr_kind == "2P2F" else ROOT.kRed + 1
+    color = ROOT.kBlue + 1 if cr_kind.startswith("2P2F") else ROOT.kRed + 1
     band.SetFillColorAlpha(color, 0.30)
     band.SetLineColor(color)
     band.SetMarkerSize(0)
@@ -1397,15 +1300,27 @@ def _draw_vbs_data_band(region, cr_kind, data_fr, band):
     data_fr.SetLineWidth(1)
     data_fr.Draw("E1 X0 same")
 
-    leg = ROOT.TLegend(0.40, 0.72, 0.92, 0.90)
+    leg = ROOT.TLegend(0.30, 0.70, 0.92, 0.90)
     leg.SetBorderSize(0)
     leg.SetFillStyle(0)
     leg.SetTextFont(42)
+    leg.SetTextSize(0.026)
+    cr_label = cr_kind.split("_", 1)[0]
+    if cr_label == "combined":
+        cr_label = "2P2F+3P1F"
     leg.SetHeader(
-        "%s %s, %s" % (ANALYSIS_MODE, cr_kind, FR_REGION_LABELS[region])
+        "%s %s [%s], %s" % (ANALYSIS_MODE, cr_label, tag_label, FR_REGION_LABELS[region])
     )
     leg.AddEntry(data_fr, "Data FR (WZ removed)", "LP")
-    leg.AddEntry(band, "MC CR-transfer band", "F")
+    if cr_kind.startswith("combined"):
+        band_label = "Mix (2P2F+3P1F) MC transfer band"
+    else:
+        band_label = "%s MC transfer band" % cr_label
+    if cr_kind.endswith("_noprompt"):
+        band_label += " (no prompt)"
+    elif cr_kind.endswith("_leftover"):
+        band_label = "Residual-prompt diagnostic (%s)" % cr_label
+    leg.AddEntry(band, band_label, "F")
     leg.Draw("goff")
     _cms_prelim(c)
     c._vbs_band_keep = (frame, data_fr, band, leg)
@@ -2474,15 +2389,55 @@ TRANSFER_VARIANTS = (
         "z1l_label": "Z+1L leftover prompt (WZ out)",
         "cr_label": "2P2F mix, leftover prompt",
     },
+    {
+        "cr": "3P1F_noprompt",
+        "z1l_tag": "noprompt",
+        "drop_wz_z1l": False,
+        "origin_keys": NONPROMPT_ORIGIN_KEYS,
+        "source_treatment": "Z1L all MC, HF+LF+conv",
+        "cr_treatment": "3P1F without ZZ, prompt dropped",
+        "z1l_label": "Z+1L no prompt",
+        "cr_label": "3P1F mix, no prompt",
+    },
+    {
+        "cr": "3P1F_leftover",
+        "z1l_tag": "leftover",
+        "drop_wz_z1l": True,
+        "origin_keys": ALL_ORIGIN_KEYS,
+        "source_treatment": "Z1L no WZ, all origins (leftover prompt)",
+        "cr_treatment": "3P1F without ZZ, leftover prompt included",
+        "z1l_label": "Z+1L leftover prompt (WZ out)",
+        "cr_label": "3P1F mix, leftover prompt",
+    },
+    {
+        "cr": "combined_noprompt",
+        "z1l_tag": "noprompt",
+        "drop_wz_z1l": False,
+        "origin_keys": NONPROMPT_ORIGIN_KEYS,
+        "source_treatment": "Z1L all MC, HF+LF+conv",
+        "cr_treatment": "2P2F+3P1F failing leptons, ZZ out of 3P1F, prompt dropped",
+        "z1l_label": "Z+1L no prompt",
+        "cr_label": "2P2F+3P1F mix, no prompt",
+    },
+    {
+        "cr": "combined_leftover",
+        "z1l_tag": "leftover",
+        "drop_wz_z1l": True,
+        "origin_keys": ALL_ORIGIN_KEYS,
+        "source_treatment": "Z1L no WZ, all origins (leftover prompt)",
+        "cr_treatment": "2P2F+3P1F failing leptons, ZZ out of 3P1F, leftover prompt included",
+        "z1l_label": "Z+1L leftover prompt (WZ out)",
+        "cr_label": "2P2F+3P1F mix, leftover prompt",
+    },
 )
 
 
 def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
-    """Build 2P2F-only CR-mix fake rates, noprompt vs leftover-prompt.
+    """Compare separate and combined 2P2F and 3P1F fake-rate transfer bands.
 
-    noprompt: Z+1L and 2P2F mixes use Fake+BD+Conv only (full MC stack).
-    leftover: Z+1L drops the WZ sample and keeps leftover prompt; 2P2F mix
-    includes prompt. ZZ subtraction stays on the 3P1F yield, not this mix.
+    All three mixtures use noprompt and leftover-prompt treatments. Combined
+    composition pools failing-lepton counts before normalizing. The 3P1F
+    contribution excludes ZZ to match the yield subtraction.
     """
     tag_label = fr_tag or "nominal"
     source_files = origin_files
@@ -2507,6 +2462,8 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
         "pt_high",
         "source_treatment",
         "cr_treatment",
+        "cr_composition_binning",
+        "interpretation",
         "c_fake",
         "c_bdfake",
         "c_conv",
@@ -2529,14 +2486,22 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
     rows = []
     summaries = {}
     report = [
-        "%s CR/Z+1L fake-rate transfer, 2P2F-only [%s]"
+        "%s CR/Z+1L fake-rate transfer, 2P2F, 3P1F and 2P2F+3P1F [%s]"
         % (ANALYSIS_MODE, tag_label),
-        "noprompt: Z+1L and 2P2F mixes use HF+LF+conv (full MC stack).",
-        "leftover: Z+1L drops WZ and keeps leftover prompt; 2P2F mix includes prompt.",
-        "3P1F is not used in the FR mix. ZZ is subtracted on the 3P1F yield.",
-        "CR fractions are inclusive in m4l and constant across pT bins.",
-        "CR-mix F = sum_i c_i f_i/(1-f_i) over failing-lepton fractions c_i;",
-        "f_cr is the effective FR F/(1+F) so that f_cr/(1-f_cr) = F_cr.",
+        "noprompt: Z+1L uses all processes; Z+1L and CR both omit prompt origins.",
+        "leftover: Z+1L drops WZ and keeps leftover prompt; CR mixes include prompt.",
+        "Leftover-prompt transfer is diagnostic: it includes residual prompt",
+        "and uses the same rate-averaging prescription as the no-prompt variant.",
+        "Combined mix pools weighted failing leptons (two per 2P2F event).",
+        "ZZ is excluded from the 3P1F contribution; WZ is kept in the CR.",
+        "Bands use |F_CR/F_Z1L - 1| as a symmetric relative odds variation,",
+        "mapped back to FR around the unchanged WZ-subtracted data central values.",
+        "MC-stat ratio errors are diagnostic and are not added to the band.",
+        "CR fractions are inclusive in the m4l histogram range.",
+        "CSV c_* fields are fractions before renormalizing over the selected origins.",
+        "CR fractions are pooled over pT and detector region by flavour.",
+        "CR-mix f_cr = sum_i c_i f_i, using failing-lepton fractions c_i",
+        "as composition proxies; convert once to F_cr = f_cr/(1-f_cr).",
         "",
     ]
     leftover_files = _files_without_wz(source_files)
@@ -2546,9 +2511,20 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
     def _append_rows(
         cr_kind, region, z1l, mix, data_fr, source_treatment, cr_treatment
     ):
-        composition = mix["composition"]
+        interpretation = (
+            "residual_prompt_diagnostic"
+            if cr_kind.endswith("_leftover")
+            else "nonprompt_composition_transfer"
+        )
         z1l_fr = z1l["z1l_fr"]
         cr_fr = mix["fr"]
+        composition = mix["composition"]
+        kappa, delta = _odds_ratio_hist(
+            cr_fr, z1l_fr, "kappa_%s_%s_%s" % (cr_kind, tag_label, region)
+        )
+        band = _data_band_graph(
+            data_fr, delta, "band_%s_%s_%s" % (cr_kind, tag_label, region)
+        )
         axis = z1l_fr.GetXaxis()
         for ibin in range(1, z1l_fr.GetNbinsX() + 1):
             f_z1l_bin = z1l_fr.GetBinContent(ibin)
@@ -2566,13 +2542,19 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                     "pt_high": axis.GetBinUpEdge(ibin),
                     "source_treatment": source_treatment,
                     "cr_treatment": cr_treatment,
+                    "cr_composition_binning": "flavour_pooled",
+                    "interpretation": interpretation,
                     "c_fake": composition["Fake"] / 100.0,
                     "c_bdfake": composition["BDfake"] / 100.0,
                     "c_conv": composition["Conv"] / 100.0,
                     "c_prompt": composition["Prompt"] / 100.0,
                     "f_data": data_fr.GetBinContent(ibin),
-                    "f_band_down": "",
-                    "f_band_up": "",
+                    "f_band_down": (
+                        band.GetPointY(ibin - 1) - band.GetErrorYlow(ibin - 1)
+                    ),
+                    "f_band_up": (
+                        band.GetPointY(ibin - 1) + band.GetErrorYhigh(ibin - 1)
+                    ),
                     "f_z1l": f_z1l_bin,
                     "f_z1l_stat": z1l_fr.GetBinError(ibin),
                     "f_cr": f_cr_bin,
@@ -2585,9 +2567,9 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                     "F_cr_stat": _odds_error(
                         f_cr_bin, cr_fr.GetBinError(ibin)
                     ),
-                    "kappa": "",
-                    "kappa_stat_approx": "",
-                    "delta": "",
+                    "kappa": kappa.GetBinContent(ibin),
+                    "kappa_stat_approx": kappa.GetBinError(ibin),
+                    "delta": delta.GetBinContent(ibin),
                 }
             )
         rows.append(
@@ -2601,6 +2583,8 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                 "pt_high": "",
                 "source_treatment": source_treatment,
                 "cr_treatment": cr_treatment,
+                "cr_composition_binning": "flavour_pooled_inclusive",
+                "interpretation": interpretation,
                 "c_fake": composition["Fake"] / 100.0,
                 "c_bdfake": composition["BDfake"] / 100.0,
                 "c_conv": composition["Conv"] / 100.0,
@@ -2616,11 +2600,15 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                 "F_z1l_stat": z1l["F_err"],
                 "F_cr": mix["F"],
                 "F_cr_stat": mix["F_err"],
-                "kappa": "",
-                "kappa_stat_approx": "",
-                "delta": "",
+                "kappa": mix["F"] / z1l["F"],
+                "kappa_stat_approx": math.hypot(
+                    mix["F_err"] / z1l["F"],
+                    mix["F"] * z1l["F_err"] / (z1l["F"] ** 2),
+                ),
+                "delta": abs(mix["F"] / z1l["F"] - 1.0),
             }
         )
+        return kappa, delta, band
 
     try:
         for region in FR_REGIONS:
@@ -2644,7 +2632,11 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                     z1l_files,
                     variant["origin_keys"],
                     region,
-                    "transfer_%s_%s" % (tag_label, variant["z1l_tag"]),
+                    "transfer_%s_%s" % (
+                        tag_label,
+                        variant["z1l_tag"] if variant["cr"].startswith("2P2F")
+                        else variant["cr"],
+                    ),
                 )
                 mix = _build_cr_mix(
                     cr_files,
@@ -2655,7 +2647,6 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                     region,
                     tag_label,
                     origin_keys=variant["origin_keys"],
-                    cr_treatment=variant["cr_treatment"],
                 )
                 composition = mix["composition"]
                 region_result[variant["cr"]] = {
@@ -2675,9 +2666,9 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                     )
                 )
                 report.append(
-                    "%s 2P2F mix Fake=%.4f BDfake=%.4f Conv=%.4f Prompt=%.4f"
+                    "%s mix Fake=%.4f BDfake=%.4f Conv=%.4f Prompt=%.4f"
                     % (
-                        variant["z1l_tag"],
+                        variant["cr"],
                         composition["Fake"] / 100.0,
                         composition["BDfake"] / 100.0,
                         composition["Conv"] / 100.0,
@@ -2685,16 +2676,16 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                     )
                 )
                 report.append(
-                    "%s 2P2F: f=%.6f +/- %.6f, F=%.6f +/- %.6f"
+                    "%s: f=%.6f +/- %.6f, F=%.6f +/- %.6f"
                     % (
-                        variant["z1l_tag"],
+                        variant["cr"],
                         mix["f"],
                         mix["f_err"],
                         mix["F"],
                         mix["F_err"],
                     )
                 )
-                _append_rows(
+                kappa, delta, band = _append_rows(
                     variant["cr"],
                     region,
                     z1l,
@@ -2703,6 +2694,11 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                     variant["source_treatment"],
                     variant["cr_treatment"],
                 )
+                _draw_vbs_data_band(region, variant["cr"], tag_label, data_fr, band)
+                region_result[variant["cr"]]["band_objects"] = (kappa, delta, band)
+                # The origin-FR overlay shows the two 2P2F treatments.
+                if variant["cr"] not in colors:
+                    continue
                 z_color, c_color, z_m, c_m = colors[variant["cr"]]
                 draw_curves.append(
                     (z1l["z1l_fr"], z_color, z_m, variant["z1l_label"])
@@ -2720,6 +2716,8 @@ def compute_vbs_cr_transfer(origin_files, cr_files, fr_tag):
                 entry = region_result[variant["cr"]]
                 entry["z1l"]["z1l_fr"].Write()
                 entry["mix"]["fr"].Write()
+                for obj in entry["band_objects"]:
+                    obj.Write()
     finally:
         root_file.Close()
         data_file.Close()
