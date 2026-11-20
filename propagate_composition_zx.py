@@ -6,18 +6,21 @@ Build two MC ZX estimates of the SR from the same CR events:
   N_3P1F^X = F^X * N_3P1F^{MC}   (ZZ subtracted)
   N_2P2F^X = (F^X)^2 * N_2P2F^{MC}
 
-The mix is 2P2F-only. Two variants are drawn:
+Both 2P2F-only and pooled 2P2F+3P1F mixes are drawn, each with:
 
-  noprompt: Z+1L and 2P2F mixes use HF+LF+conv (full MC stack)
-  leftover: Z+1L drops WZ and keeps leftover prompt; 2P2F mix includes
-            leftover prompt. ZZ is still subtracted from 3P1F yields.
+  noprompt: Z+1L and CR mixes use HF+LF+conv
+  leftover: Z+1L drops WZ and keeps leftover prompt; CR mix includes
+            prompt. This is a residual-prompt diagnostic.
+
+ZZ is excluded from the 3P1F contribution to the pooled mix and yields.
 
 The hybrid per m4l bin is the same as the SR estimator (2P2F if
 3P1F <= 2*2P2F, else 3P1F-2P2F), frozen on the Z1L estimate.
 
-  delta = (N_ZX^Z1L - N_ZX^{2P2F}) / N_ZX^Z1L
+  delta = (N_ZX^Z1L - N_ZX^{CR}) / N_ZX^Z1L
 
-The inclusive calculation uses one effective fake-factor weight per flavour.
+The inclusive calculation averages regional rates with WZ-subtracted data
+denominators, then converts once to one fake-factor weight per flavour.
 The per-pT calculation applies the weights to individual failing leptons.
 Relative MC variations are transferred bin by bin to uncertainty bands
 around the unchanged data-driven Z+X prediction.
@@ -143,8 +146,8 @@ def _load_transfer(fr_tag, bin_id="inclusive"):
     table = {}
     for row in rows:
         table[(row["cr"], row["region"])] = {
-            "F_z1l": float(row["F_z1l"]),
-            "F_cr": float(row["F_cr"]),
+            "f_z1l": float(row["f_z1l"]),
+            "f_cr": float(row["f_cr"]),
         }
     return table
 
@@ -200,15 +203,29 @@ MIX_VARIANTS = (
     {
         "key": "noprompt",
         "cr": "2P2F_noprompt",
-        "label": "no prompt",
+        "label": "2P2F mix, no prompt",
         "envelope": "2P2F mix, no prompt",
         "method": "inclusive FR, no prompt",
     },
     {
         "key": "leftover",
         "cr": "2P2F_leftover",
-        "label": "leftover prompt (WZ out of Z+1L, ZZ out of 3P1F)",
-        "envelope": "2P2F mix, leftover prompt",
+        "label": "2P2F mix, residual-prompt diagnostic",
+        "envelope": "2P2F mix, residual-prompt diagnostic",
+        "method": "inclusive FR, leftover prompt",
+    },
+    {
+        "key": "combined_noprompt",
+        "cr": "combined_noprompt",
+        "label": "2P2F+3P1F mix, no prompt",
+        "envelope": "2P2F+3P1F mix, no prompt",
+        "method": "inclusive FR, no prompt",
+    },
+    {
+        "key": "combined_leftover",
+        "cr": "combined_leftover",
+        "label": "2P2F+3P1F mix, residual-prompt diagnostic",
+        "envelope": "2P2F+3P1F mix, residual-prompt diagnostic",
         "method": "inclusive FR, leftover prompt",
     },
 )
@@ -234,21 +251,25 @@ def _flavour_F(transfer, weights, cr_kind):
     flavour_report = []
     for flavour in ("electron", "muon"):
         f_z1l, parts_z = _flavour_average(
-            transfer, weights, cr_kind, flavour, "F_z1l"
+            transfer, weights, cr_kind, flavour, "f_z1l"
         )
         f_cr, _parts_c = _flavour_average(
-            transfer, weights, cr_kind, flavour, "F_cr"
+            transfer, weights, cr_kind, flavour, "f_cr"
         )
+        if not (0.0 <= f_z1l < 1.0 and 0.0 <= f_cr < 1.0):
+            raise RuntimeError("Invalid averaged rates for %s / %s" % (cr_kind, flavour))
+        F_z1l = f_z1l / (1.0 - f_z1l)
+        F_cr = f_cr / (1.0 - f_cr)
         flavour_F[flavour] = {
-            "F_z1l": f_z1l,
-            "F_cr": f_cr,
+            "F_z1l": F_z1l,
+            "F_cr": F_cr,
         }
         flavour_report.append(
-            "%s: F_Z1L=%.5f  F_2P2F=%.5f" % (flavour, f_z1l, f_cr)
+            "%s: F_Z1L=%.5f  F_CR=%.5f" % (flavour, F_z1l, F_cr)
         )
         flavour_report.append(
             "  Z1L regions: %s"
-            % ", ".join("%s F=%.5f w=%.1f" % item for item in parts_z)
+            % ", ".join("%s f=%.5f w=%.1f" % item for item in parts_z)
         )
     return flavour_F, flavour_report
 
@@ -408,12 +429,11 @@ def _cms_prelim(canvas):
 
 def _fr_method_header(fr_tag, method, extra=""):
     """Legend header that states inclusive FR vs per-pT FR explicitly."""
-    title = ANALYSIS_LABEL + " Z+X"
-    if extra:
-        title += " " + extra
-    if fr_tag and fr_tag != "nominal":
-        title += " [%s]" % fr_tag
-    return "#splitline{%s}{%s}" % (title, method)
+    channels = {"4e": "4e", "4mu": "4#mu", "2e2mu": "2e2#mu", "2mu2e": "2#mu2e"}
+    channel = channels.get(extra, extra) if extra else "all channels"
+    title = "%s SR Z+X, %s" % (ANALYSIS_LABEL, channel)
+    selection = "FR selection: %s; barrel + endcap" % (fr_tag or "nominal")
+    return "#splitline{%s}{#splitline{%s}{%s}}" % (title, selection, method)
 
 
 def _band_graph(nominal, up, down):
@@ -482,7 +502,7 @@ def _draw_tot_band(
     nominal.SetLineWidth(1)
     nominal.Draw("E1 X0 same")
 
-    legend = ROOT.TLegend(0.38, 0.64, 0.92, 0.90)
+    legend = ROOT.TLegend(0.27, 0.62, 0.92, 0.90)
     legend.SetBorderSize(0)
     legend.SetFillStyle(0)
     legend.SetTextFont(42)
@@ -521,15 +541,14 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
     if not tfile or tfile.IsZombie():
         print("Skipping per-pT composition: cannot open %s" % PERPT_MC_FILE)
         return
-    probe = "mc_%s_z1l_noprompt_2P2F_4e" % fr_tag
-    if not tfile.Get(probe):
-        tfile.Close()
-        print(
-            "Skipping per-pT composition: %s not in %s. "
-            "Refill composition_perpt_loop.py after the 2P2F mix change."
-            % (probe, PERPT_MC_FILE)
-        )
-        return
+    for variant in MIX_VARIANTS:
+        probe = "mc_%s_cr_%s_2P2F_4e" % (fr_tag, variant["key"])
+        if not tfile.Get(probe):
+            tfile.Close()
+            raise RuntimeError(
+                "Missing %s in %s. Refill and merge composition_perpt_loop.py."
+                % (probe, PERPT_MC_FILE)
+            )
 
     def load(kind, cr, channel):
         name = "mc_%s_%s_%s_%s" % (fr_tag, kind, cr, channel)
@@ -544,12 +563,12 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
     lines = [
         "%s Z+X composition per-pT FR [%s]" % (ANALYSIS_LABEL, fr_tag),
         "F treatment: per-pT FR (f(pT,eta) of each failing lepton).",
-        "Mix: 2P2F-only. 3P1F is not used in the FR mix.",
+        "Mixes: 2P2F-only and pooled 2P2F+3P1F (ZZ excluded from 3P1F).",
         "3P1F: w*F_failing. 2P2F: w*F3*F4. Same hybrid as inclusive F.",
         "ZZ subtracted from 3P1F yields.",
         "",
     ]
-    csv_rows = ["channel,variant,n_mc_z1l,n_mc_2p2f,delta"]
+    csv_rows = ["channel,variant,n_mc_z1l,n_mc_cr,delta"]
     plot_specs = []
     try:
         for variant in MIX_VARIANTS:
@@ -591,7 +610,7 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
                     % (n_2p2f, n_diff)
                 )
                 lines.append(
-                    "N_Z1L=%.4f  N_2P2F=%.4f  delta=%.4f (%.1f%%)"
+                    "N_Z1L=%.4f  N_CR=%.4f  delta=%.4f (%.1f%%)"
                     % (n_z1l, n_cr, delta, 100.0 * abs(delta))
                 )
                 lines.append("")
@@ -610,7 +629,7 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
                         % (channel, variant["key"]),
                         _fr_method_header(
                             fr_tag,
-                            "per-p_{T} FR, " + variant["key"],
+                            variant["method"].replace("inclusive FR", "per-p_{T} FR"),
                             extra=channel,
                         ),
                         variant["envelope"],
@@ -635,7 +654,7 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
                             % (channel, variant["key"]),
                             _fr_method_header(
                                 fr_tag,
-                                "per-p_{T} FR, " + variant["key"],
+                                variant["method"].replace("inclusive FR", "per-p_{T} FR"),
                                 extra=channel,
                             ),
                             variant["envelope"],
@@ -662,7 +681,7 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
                 % (variant["key"], n_z1l_inc, n_cr_inc, delta_inc)
             )
             lines.append(
-                "Inclusive %s: N_Z1L=%.4f  N_2P2F=%.4f  delta=%.4f (%.1f%%)"
+                "Inclusive %s: N_Z1L=%.4f  N_CR=%.4f  delta=%.4f (%.1f%%)"
                 % (
                     variant["key"],
                     n_z1l_inc,
@@ -679,7 +698,7 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
                     tot_down,
                     "ZX_composition_band_mc_%s_perpt" % variant["key"],
                     _fr_method_header(
-                        fr_tag, "per-p_{T} FR, " + variant["key"]
+                        fr_tag, variant["method"].replace("inclusive FR", "per-p_{T} FR")
                     ),
                     variant["envelope"],
                     "MC ZX (F_{Z+1L})",
@@ -700,7 +719,7 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
                         data_down,
                         "ZX_composition_band_%s_perpt" % variant["key"],
                         _fr_method_header(
-                            fr_tag, "per-p_{T} FR, " + variant["key"]
+                            fr_tag, variant["method"].replace("inclusive FR", "per-p_{T} FR")
                         ),
                         variant["envelope"],
                         "data ZX",
@@ -753,21 +772,19 @@ def run_tag(fr_tag):
     public_dir = os.path.join(PUBLIC_PLOT_DIR, fr_tag)
     os.makedirs(out_dir, exist_ok=True)
     os.makedirs(public_dir, exist_ok=True)
-    _remove_obsolete_plots(out_dir)
-    _remove_obsolete_plots(public_dir)
 
     lines = [
         "%s Z+X composition systematic [%s]" % (ANALYSIS_LABEL, fr_tag),
-        "F treatment: inclusive FR (one F per flavour = F_2P2F vs F_Z1L).",
-        "Mix: 2P2F-only. 3P1F is not used in the FR mix.",
+        "F treatment: inclusive FR (one F per flavour = F_CR vs F_Z1L).",
+        "Mixes: 2P2F-only and pooled 2P2F+3P1F (ZZ excluded from 3P1F).",
         "noprompt: HF+LF+conv from the full MC stack.",
         "leftover: WZ dropped from Z+1L; leftover prompt kept in the mix;",
         "          ZZ subtracted from 3P1F yields.",
         "MC SR ZX: CR event counts x F (3P1F) or F^2 (2P2F).",
         "3P1F MC samples: DY+TT+WZ (ZZ subtracted). 2P2F: DY+TT+WZ+ZZ.",
         "Hybrid: 2P2F if 3P1F <= 2*2P2F else 3P1F-2P2F, frozen on MC Z1L.",
-        "delta = (N_MC_SR(F_Z1L) - N_MC_SR(F_2P2F)) / N_MC_SR(F_Z1L).",
-        "Inclusive F: flavour-averaged with the WZ-subtracted Z+1L denominator.",
+        "delta = (N_MC_SR(F_Z1L) - N_MC_SR(F_CR)) / N_MC_SR(F_Z1L).",
+        "Inclusive f: region-averaged with WZ-subtracted Z+1L denominators, then F=f/(1-f).",
         "Inclusive and per-pT composition results are written separately.",
         "Relative MC variations define bands around the unchanged data ZX prediction.",
         "",
@@ -777,7 +794,7 @@ def run_tag(fr_tag):
     channel_data = []
     h2_mc_by_ch = {}
     h3_mc_by_ch = {}
-    csv_rows = ["channel,variant,n_mc_z1l,n_mc_2p2f,delta"]
+    csv_rows = ["channel,variant,n_mc_z1l,n_mc_cr,delta"]
     try:
         for channel, flavour in CHANNELS:
             h2_mc_by_ch[channel] = _sum_mc_cr(
@@ -957,10 +974,10 @@ def run_tag(fr_tag):
                     % (n_2p2f, n_diff)
                 )
                 lines.append(
-                    "F_Z1L=%.5f  F_2P2F=%.5f" % (f_z1l, f_cr)
+                    "F_Z1L=%.5f  F_CR=%.5f" % (f_z1l, f_cr)
                 )
                 lines.append(
-                    "N_Z1L=%.4f  N_2P2F=%.4f  delta=%.4f (%.1f%%)"
+                    "N_Z1L=%.4f  N_CR=%.4f  delta=%.4f (%.1f%%)"
                     % (n_z1l, n_cr, delta, 100.0 * abs(delta))
                 )
                 lines.append("")
@@ -989,7 +1006,7 @@ def run_tag(fr_tag):
                 % (variant["key"], n_z1l_inc, n_cr_inc, delta_inc)
             )
             lines.append(
-                "Inclusive %s: N_Z1L=%.4f  N_2P2F=%.4f  delta=%.4f (%.1f%%)"
+                "Inclusive %s: N_Z1L=%.4f  N_CR=%.4f  delta=%.4f (%.1f%%)"
                 % (
                     variant["key"],
                     n_z1l_inc,

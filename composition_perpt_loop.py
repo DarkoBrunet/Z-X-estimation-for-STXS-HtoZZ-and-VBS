@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Event-by-event MC ZX using per-pT 2P2F-mix composition FRs.
+"""Event-by-event MC ZX using per-pT 2P2F and pooled 2P2F+3P1F composition FRs.
 
 Origin FRs vs pT are already in FR_CR_transfer.csv. This loop applies the
 f(pT, eta) of each failing lepton, then F=f/(1-f), the same way
@@ -8,9 +8,9 @@ estimateZX applies data fake rates:
   3P1F: w * F_failing
   2P2F: w * F3 * F4
 
-Two mixes: noprompt (HF+LF+conv) and leftover prompt (WZ out of Z+1L,
-prompt kept in the 2P2F mix). 3P1F is not used in the mix. ZZ is omitted
-from 3P1F yields.
+Each mix has noprompt (HF+LF+conv) and leftover-prompt diagnostic variants
+(WZ out of Z+1L, prompt kept in the CR mix). ZZ is omitted from the
+3P1F contribution to the pooled mix and yields.
 
 Set VBS below independently of analyzeZX.VBS:
   True  -> ZpXVBS2024_results, VBS CR/SR gate, ge1j/ge2j
@@ -76,7 +76,11 @@ PARTIAL_DIR = os.path.join(OUT_DIR, "composition_perpt_partials")
 MERGED_PATH = os.path.join(OUT_DIR, "composition_perpt_mc.root")
 MC_NICKNAMES = ("DY50", "TT", "WZ", "ZZ")
 CHANNELS = ("4e", "4mu", "2e2mu", "2mu2e")
-KINDS = ("z1l_noprompt", "cr_noprompt", "z1l_leftover", "cr_leftover")
+KINDS = (
+    "z1l_noprompt", "cr_noprompt", "z1l_leftover", "cr_leftover",
+    "z1l_combined_noprompt", "cr_combined_noprompt",
+    "z1l_combined_leftover", "cr_combined_leftover",
+)
 CRS = ("2P2F", "3P1F")
 REGION_HIST = {
     "EB": "Data_FRel_EB",
@@ -239,6 +243,10 @@ def _build_fr_hists():
             ("cr_noprompt", "2P2F_noprompt", "f_cr"),
             ("z1l_leftover", "2P2F_leftover", "f_z1l"),
             ("cr_leftover", "2P2F_leftover", "f_cr"),
+            ("z1l_combined_noprompt", "combined_noprompt", "f_z1l"),
+            ("cr_combined_noprompt", "combined_noprompt", "f_cr"),
+            ("z1l_combined_leftover", "combined_leftover", "f_z1l"),
+            ("cr_combined_leftover", "combined_leftover", "f_cr"),
         ):
             packed = {}
             for region, hname in REGION_HIST.items():
@@ -250,6 +258,7 @@ def _build_fr_hists():
                 hist.Reset("ICES")
                 hist.SetDirectory(0)
                 packed[REGION_TO_GETFR[region]] = hist
+            filled = set()
             for row in rows:
                 if row["cr"] != cr_key:
                     continue
@@ -262,6 +271,16 @@ def _build_fr_hists():
                 if ibin < 1 or ibin > hist.GetNbinsX():
                     continue
                 hist.SetBinContent(ibin, float(row[field]))
+                filled.add((key, ibin))
+            expected = {
+                (key, ibin)
+                for key, hist in packed.items()
+                for ibin in range(1, hist.GetNbinsX() + 1)
+            }
+            if filled != expected:
+                data_file.Close()
+                raise RuntimeError("Incomplete %s rates in %s; regenerate transfer CSVs."
+                                   % (cr_key, csv_path))
             tag_hists[kind] = packed
         data_file.Close()
         out[fr_tag] = tag_hists
@@ -450,6 +469,15 @@ def merge_partials(partial_paths, out_path):
         tfile = ROOT.TFile.Open(path, "READ")
         if not tfile or tfile.IsZombie():
             raise RuntimeError("Cannot open partial %s" % path)
+        for fr_tag in FR_TAGS:
+            for kind in KINDS:
+                for cr in CRS:
+                    for channel in CHANNELS:
+                        name = _hist_name(fr_tag, kind, cr, channel)
+                        if not tfile.Get(name):
+                            tfile.Close()
+                            raise RuntimeError("Missing %s in partial %s; refill workers."
+                                               % (name, path))
         extra = {}
         for key in tfile.GetListOfKeys():
             hist = tfile.Get(key.GetName())
