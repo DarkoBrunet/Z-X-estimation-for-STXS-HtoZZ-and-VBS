@@ -3,7 +3,7 @@ import ROOT
 import math
 import os
 from ROOT import TColor
-from analyzeZX import setCavasAndStyles, m4l_plot_config, VBS, MZ1_JET_CATEGORIES
+from analyzeZX import setCavasAndStyles, m4l_plot_config, VBS, MZ1_JET_CATEGORIES, PTL3_JET_CATEGORIES
 _EOS_USER = "/eos/user/b/brunetd"
 HTOZZ_EOS_DIR = os.path.join(_EOS_USER, "ZplusXpython_HtoZZ2024")
 VBS_EOS_DIR = os.path.join(_EOS_USER, "ZpXVBS2024_results")
@@ -1274,7 +1274,7 @@ def SRTotalPlot():
             c1.SaveAs(SR_PLOT_DIR + "/" + out_label + "_auto.root")
 
 
-MZ1_JET_LABELS = {
+ND_JET_LABELS = {
     None: "inclusive",
     "eq0j": "exactly 0 jets",
     "eq1j": "exactly 1 jet",
@@ -1355,10 +1355,10 @@ def PlotNDProcess(Type, VarP, jet_tag=None):
         entry.SetMarkerStyle(21)
         entry.SetMarkerSize(1)
         entry.SetTextFont(62)
-        if (VarP == "mZ1"):
+        if VarP in ("ptl3", "mZ1"):
             mode_label = "VBS" if VBS else "HtoZZ"
             entry = leg.AddEntry(
-                ROOT.nullptr, mode_label + " Z+1L: " + MZ1_JET_LABELS[jet_tag], ""
+                ROOT.nullptr, mode_label + " Z+1L: " + ND_JET_LABELS[jet_tag], ""
             )
             entry.SetTextFont(42)
         entry=leg.AddEntry(ROOT.nullptr,"Data","LP")
@@ -1618,10 +1618,10 @@ def PlotNDMatched(Type, VarP, jet_tag=None):
         entry.SetMarkerStyle(21)
         entry.SetMarkerSize(1)
         entry.SetTextFont(62)
-        if (VarP == "mZ1"):
+        if VarP in ("ptl3", "mZ1"):
             mode_label = "VBS" if VBS else "HtoZZ"
             entry = leg.AddEntry(
-                ROOT.nullptr, mode_label + " Z+1L: " + MZ1_JET_LABELS[jet_tag], ""
+                ROOT.nullptr, mode_label + " Z+1L: " + ND_JET_LABELS[jet_tag], ""
             )
             entry.SetTextFont(42)
         
@@ -2109,6 +2109,10 @@ if __name__ == "__main__":
         "--var", choices=("all", "ptl3", "mZ1", "mEt"), default="all",
         help="Draw only this variable; mZ1/mEt do not read stage-2 outputs",
     )
+    parser.add_argument(
+        "--distributions-only", action="store_true",
+        help="Draw only Z+1L numerator/denominator distributions, without stage-2 or WZ-subtracted inputs",
+    )
     args = parser.parse_args()
 
     for output_dir in (
@@ -2124,7 +2128,7 @@ if __name__ == "__main__":
 
     os.chdir(STAGE1_DIR)
 
-    if args.var in ("all", "ptl3"):
+    if not args.distributions_only and args.var in ("all", "ptl3"):
         CRPlot()
         CRMatchPlot()
         SRInputPlot()
@@ -2132,7 +2136,7 @@ if __name__ == "__main__":
         SRPlot()
         SRMatchPlot()
         PlotFRvsPtl3()
-    if args.var in ("all", "mZ1"):
+    if not args.distributions_only and args.var in ("all", "mZ1"):
         PlotFRvsMZ1()
 
     variables = ("ptl3", "mZ1", "mEt") if args.var == "all" else (args.var,)
@@ -2143,7 +2147,7 @@ if __name__ == "__main__":
         PlotNDMatched("d", var)
         jet_tags = []
         if var == "ptl3":
-            jet_tags = ["ge1j", "ge2j"]
+            jet_tags = [tag for tag, _min_jets, _max_jets in PTL3_JET_CATEGORIES]
         elif var == "mZ1":
             jet_tags = [tag for tag, _min_jets, _max_jets in MZ1_JET_CATEGORIES]
         for jet_tag in jet_tags:

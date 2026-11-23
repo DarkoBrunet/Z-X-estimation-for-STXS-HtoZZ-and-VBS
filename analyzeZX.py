@@ -46,9 +46,19 @@ MZ1_JET_CATEGORIES = [
 ]
 
 
+PTL3_JET_CATEGORIES = [
+    ("eq0j", 0, 0),
+    ("eq1j", 1, 1),
+    ("ge1j", 1, None),
+    ("ge2j", 2, None),
+]
+
+
 def _fr_jet_categories(varName):
     if varName == "mZ1":
         return MZ1_JET_CATEGORIES
+    if varName == "ptl3":
+        return PTL3_JET_CATEGORIES
     return [(tag, min_jets, None) for tag, min_jets in VBS_FR_JET_THRESHOLDS]
 
 _FR_RAW_KEYS = [
@@ -386,8 +396,7 @@ _ANALYZEZX_JET_ORIGIN_KEYS = [
 ]
 _ANALYZEZX_SINGLE_KEYS += _ANALYZEZX_JET_ORIGIN_KEYS
 
-# Only mZ1 partials require the extra exact-count categories. Keep existing
-# ptl3/mEt partials readable without adding empty new histograms to them.
+# Exact-count categories are variable-specific; mEt keeps its existing schema.
 _ANALYZEZX_MZ1_JET_KEYS = [
     "%s_%s" % (key, tag)
     for tag, _min_jets, max_jets in MZ1_JET_CATEGORIES
@@ -397,6 +406,11 @@ _ANALYZEZX_MZ1_JET_KEYS = [
         for prefix in _ORIGIN_HIST_PREFIXES
         for region in _ANALYZEZX_FR_ORDER
     ]
+]
+
+_ANALYZEZX_PTL3_JET_KEYS = [
+    key for key in _ANALYZEZX_MZ1_JET_KEYS
+    if key.endswith(("_eq0j", "_eq1j"))
 ]
 
 _ANALYZEZX_LIST_KEYS = [
@@ -701,6 +715,8 @@ def _write_analyzeZX_partial(hists, Nickname, varName, isData, out_dir, suffix):
     single_keys = _ANALYZEZX_SINGLE_KEYS
     if varName == "mZ1":
         single_keys = single_keys + _ANALYZEZX_MZ1_JET_KEYS
+    elif varName == "ptl3":
+        single_keys = single_keys + _ANALYZEZX_PTL3_JET_KEYS
     for key in single_keys:
         hist = hists[key]
         hist.SetName(key)
@@ -730,6 +746,8 @@ def _read_analyzeZX_partial(main_path, varName="ptl3"):
     single_keys = _ANALYZEZX_SINGLE_KEYS
     if varName == "mZ1":
         single_keys = single_keys + _ANALYZEZX_MZ1_JET_KEYS
+    elif varName == "ptl3":
+        single_keys = single_keys + _ANALYZEZX_PTL3_JET_KEYS
     for key in single_keys:
         hist = _read_histogram_from_file(main_file, key)
         if hist is None:
