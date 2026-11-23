@@ -17,7 +17,7 @@ from MC_composition import PartOrigin, PartOriginFromFlav
 # NOT gated, so the measured fake rates are identical to the nominal analysis.
 # When VBS is True the m4l histograms are also re-booked to the VBS range.
 # Keep this flag in sync with the VBS flag in estimateZX.py.
-VBS = False
+VBS = True
 
 # VBS selection cut values (ZZjj inclusive, following the VBS analysis note).
 VBS_MZ_LOW = 60.0
@@ -35,6 +35,22 @@ VBS_FR_JET_THRESHOLDS = [
     ("ge1j", 1),
     ("ge2j", 2),
 ]
+# mZ1 diagnostics use the same cleaned jets, in either analysis mode.
+# Inclusive stays in the existing untagged histograms.
+MZ1_JET_CATEGORIES = [
+    ("eq0j", 0, 0),
+    ("eq1j", 1, 1),
+    ("ge1j", 1, None),
+    ("eq2j", 2, 2),
+    ("ge2j", 2, None),
+]
+
+
+def _fr_jet_categories(varName):
+    if varName == "mZ1":
+        return MZ1_JET_CATEGORIES
+    return [(tag, min_jets, None) for tag, min_jets in VBS_FR_JET_THRESHOLDS]
+
 _FR_RAW_KEYS = [
     "h1D_FRel_EB",
     "h1D_FRel_EE",
@@ -74,7 +90,7 @@ def _cleaned_vbs_jets(event, lep_etas, lep_phis):
         if VBS_JET_ID is not None and event.Jet_jetId[ij] != VBS_JET_ID:
             continue
         jphi = event.Jet_phi[ij]
-        # jet-lepton cleaning against all four ZLL-candidate leptons
+        # Clean against the supplied Z+1L or four-lepton candidate.
         too_close = False
         for leta, lphi in zip(lep_etas, lep_phis):
             if _delta_r(leta, lphi, jeta, jphi) < VBS_JET_LEP_DR_MIN:
@@ -176,14 +192,14 @@ def _cr_plot_config(varName):
 
 def _book_fr_histograms(tag, ptl_bins_el, ptl_bins_mu):
     hists = {
-        "h1D_FRel_EB": ROOT.TH1D("h1D_FRel_EB_" + tag, "h1D_FRel_EB_" + tag, 6, ptl_bins_el),
-        "h1D_FRel_EE": ROOT.TH1D("h1D_FRel_EE_" + tag, "h1D_FRel_EE_" + tag, 6, ptl_bins_el),
-        "h1D_FRmu_EB": ROOT.TH1D("h1D_FRmu_EB_" + tag, "h1D_FRmu_EB_" + tag, 7, ptl_bins_mu),
-        "h1D_FRmu_EE": ROOT.TH1D("h1D_FRmu_EE_" + tag, "h1D_FRmu_EE_" + tag, 7, ptl_bins_mu),
-        "h1D_FRel_EB_d": ROOT.TH1D("h1D_FRel_EB_d_" + tag, "h1D_FRel_EB_d_" + tag, 6, ptl_bins_el),
-        "h1D_FRel_EE_d": ROOT.TH1D("h1D_FRel_EE_d_" + tag, "h1D_FRel_EE_d_" + tag, 6, ptl_bins_el),
-        "h1D_FRmu_EB_d": ROOT.TH1D("h1D_FRmu_EB_d_" + tag, "h1D_FRmu_EB_d_" + tag, 7, ptl_bins_mu),
-        "h1D_FRmu_EE_d": ROOT.TH1D("h1D_FRmu_EE_d_" + tag, "h1D_FRmu_EE_d_" + tag, 7, ptl_bins_mu),
+        "h1D_FRel_EB": ROOT.TH1D("h1D_FRel_EB_" + tag, "h1D_FRel_EB_" + tag, len(ptl_bins_el) - 1, ptl_bins_el),
+        "h1D_FRel_EE": ROOT.TH1D("h1D_FRel_EE_" + tag, "h1D_FRel_EE_" + tag, len(ptl_bins_el) - 1, ptl_bins_el),
+        "h1D_FRmu_EB": ROOT.TH1D("h1D_FRmu_EB_" + tag, "h1D_FRmu_EB_" + tag, len(ptl_bins_mu) - 1, ptl_bins_mu),
+        "h1D_FRmu_EE": ROOT.TH1D("h1D_FRmu_EE_" + tag, "h1D_FRmu_EE_" + tag, len(ptl_bins_mu) - 1, ptl_bins_mu),
+        "h1D_FRel_EB_d": ROOT.TH1D("h1D_FRel_EB_d_" + tag, "h1D_FRel_EB_d_" + tag, len(ptl_bins_el) - 1, ptl_bins_el),
+        "h1D_FRel_EE_d": ROOT.TH1D("h1D_FRel_EE_d_" + tag, "h1D_FRel_EE_d_" + tag, len(ptl_bins_el) - 1, ptl_bins_el),
+        "h1D_FRmu_EB_d": ROOT.TH1D("h1D_FRmu_EB_d_" + tag, "h1D_FRmu_EB_d_" + tag, len(ptl_bins_mu) - 1, ptl_bins_mu),
+        "h1D_FRmu_EE_d": ROOT.TH1D("h1D_FRmu_EE_d_" + tag, "h1D_FRmu_EE_d_" + tag, len(ptl_bins_mu) - 1, ptl_bins_mu),
     }
     for hist in hists.values():
         hist.Sumw2()
@@ -210,7 +226,7 @@ def _book_origin_histograms(tag, ptl_bins_el, ptl_bins_mu):
 
 def _flatten_jet_fr_hists(jet_fr_hists):
     flat = {}
-    for tag, _min_jets in VBS_FR_JET_THRESHOLDS:
+    for tag in jet_fr_hists:
         for key in _FR_RAW_KEYS:
             flat["%s_%s" % (key, tag)] = _detach_histogram(jet_fr_hists[tag][key])
     return flat
@@ -218,7 +234,7 @@ def _flatten_jet_fr_hists(jet_fr_hists):
 
 def _flatten_jet_origin_hists(jet_origin_hists):
     flat = {}
-    for tag, _min_jets in VBS_FR_JET_THRESHOLDS:
+    for tag in jet_origin_hists:
         for key, hist in jet_origin_hists[tag].items():
             flat["%s_%s" % (key, tag)] = _detach_histogram(hist)
     return flat
@@ -369,6 +385,19 @@ _ANALYZEZX_JET_ORIGIN_KEYS = [
     for region in _ANALYZEZX_FR_ORDER
 ]
 _ANALYZEZX_SINGLE_KEYS += _ANALYZEZX_JET_ORIGIN_KEYS
+
+# Only mZ1 partials require the extra exact-count categories. Keep existing
+# ptl3/mEt partials readable without adding empty new histograms to them.
+_ANALYZEZX_MZ1_JET_KEYS = [
+    "%s_%s" % (key, tag)
+    for tag, _min_jets, max_jets in MZ1_JET_CATEGORIES
+    if max_jets is not None
+    for key in _FR_RAW_KEYS + [
+        "%s%s" % (prefix, region)
+        for prefix in _ORIGIN_HIST_PREFIXES
+        for region in _ANALYZEZX_FR_ORDER
+    ]
+]
 
 _ANALYZEZX_LIST_KEYS = [
     "CR_Prom",
@@ -535,10 +564,10 @@ def _analyzeZX_list_length(list_key):
 
 def _read_histogram_from_file(tfile, name):
     key = tfile.GetKey(name)
-    if key is None:
+    if not key:
         return None
     obj = key.ReadObj()
-    if obj is None:
+    if not obj:
         return None
     if not obj.InheritsFrom(ROOT.TH1.Class()):
         raise RuntimeError(
@@ -629,6 +658,10 @@ def _merge_analyzeZX_histograms(accumulated, chunk_hists):
     for key in _ANALYZEZX_SINGLE_KEYS:
         accumulated[key].Add(chunk_hists[key])
 
+    for key in _ANALYZEZX_MZ1_JET_KEYS:
+        if key in accumulated:
+            accumulated[key].Add(chunk_hists[key])
+
     for list_key in _ANALYZEZX_LIST_KEYS:
         for i in range(len(accumulated[list_key])):
             accumulated[list_key][i].Add(chunk_hists[list_key][i])
@@ -665,7 +698,10 @@ def _write_analyzeZX_partial(hists, Nickname, varName, isData, out_dir, suffix):
     )
 
     main_file = ROOT.TFile(main_path, "RECREATE")
-    for key in _ANALYZEZX_SINGLE_KEYS:
+    single_keys = _ANALYZEZX_SINGLE_KEYS
+    if varName == "mZ1":
+        single_keys = single_keys + _ANALYZEZX_MZ1_JET_KEYS
+    for key in single_keys:
         hist = hists[key]
         hist.SetName(key)
         hist.Write()
@@ -681,7 +717,7 @@ def _write_analyzeZX_partial(hists, Nickname, varName, isData, out_dir, suffix):
     return main_path, id_path
 
 
-def _read_analyzeZX_partial(main_path):
+def _read_analyzeZX_partial(main_path, varName="ptl3"):
     """Load raw histogram dict written by _write_analyzeZX_partial."""
     id_path = _partial_id_path_for_main(main_path)
     if not os.path.isfile(id_path):
@@ -691,7 +727,10 @@ def _read_analyzeZX_partial(main_path):
     main_file = ROOT.TFile.Open(main_path, "READ")
     if main_file is None or main_file.IsZombie():
         raise RuntimeError("Cannot open partial Hist file: %s" % main_path)
-    for key in _ANALYZEZX_SINGLE_KEYS:
+    single_keys = _ANALYZEZX_SINGLE_KEYS
+    if varName == "mZ1":
+        single_keys = single_keys + _ANALYZEZX_MZ1_JET_KEYS
+    for key in single_keys:
         hist = _read_histogram_from_file(main_file, key)
         if hist is None:
             main_file.Close()
@@ -750,7 +789,7 @@ def merge_analyzeZX_partials(
 
     accumulated = None
     for main_path in partial_paths:
-        chunk_hists = _read_analyzeZX_partial(main_path)
+        chunk_hists = _read_analyzeZX_partial(main_path, varName)
         if accumulated is None:
             accumulated = chunk_hists
         else:
@@ -913,8 +952,8 @@ def _write_analyzeZX_histograms(hists, Nickname, varName, isData, out_dir="."):
 
     SaveRootFile.Close()
 
-    if VBS and varName == "ptl3":
-        for tag, _min_jets in VBS_FR_JET_THRESHOLDS:
+    if (VBS and varName == "ptl3") or varName == "mZ1":
+        for tag, _min_jets, _max_jets in _fr_jet_categories(varName):
             fr_hists = {}
             for key in _FR_RAW_KEYS:
                 fr_hists[key] = hists["%s_%s" % (key, tag)]
@@ -956,8 +995,8 @@ def _write_analyzeZX_histograms(hists, Nickname, varName, isData, out_dir="."):
 
     SaveRootFile_Types_of_fake.Close()
 
-    if VBS and varName == "ptl3":
-        for tag, _min_jets in VBS_FR_JET_THRESHOLDS:
+    if (VBS and varName == "ptl3") or varName == "mZ1":
+        for tag, _min_jets, _max_jets in _fr_jet_categories(varName):
             tagged_id_file = ROOT.TFile(
                 os.path.join(
                     out_dir,
@@ -1159,10 +1198,15 @@ def analyzeZX(
 
     jet_fr_hists = {}
     jet_origin_hists = {}
-    for tag, _min_jets in VBS_FR_JET_THRESHOLDS:
-        jet_fr_hists[tag] = _book_fr_histograms(tag, PtlBins, PtlBinsMu)
+    jet_bins_el = PtlBins
+    jet_bins_mu = PtlBinsMu
+    if varName == "mZ1":
+        jet_bins_el = np.linspace(var_plotLow, var_plotHigh, var_nBins + 1)
+        jet_bins_mu = jet_bins_el
+    for tag, _min_jets, _max_jets in _fr_jet_categories(varName):
+        jet_fr_hists[tag] = _book_fr_histograms(tag, jet_bins_el, jet_bins_mu)
         jet_origin_hists[tag] = _book_origin_histograms(
-            tag, PtlBins, PtlBinsMu
+            tag, jet_bins_el, jet_bins_mu
         )
 
     cr_cfg = _cr_plot_config(varName)
@@ -1429,14 +1473,15 @@ def analyzeZX(
                     PartOriginFromFlav(isData, event, lep_Hindex, FillVar, weight, Hist_prompt[barrel_endcap_region.ME_n], Hist_fakes[barrel_endcap_region.ME_n],Hist_BDfakes[barrel_endcap_region.ME_n], Hist_conv[barrel_endcap_region.ME_n], False)
                     h1D_FRmu_EE.Fill(FillVar, weight)
   
-            if VBS and varName == "ptl3" and TestVar:
+            if ((VBS and varName == "ptl3") or varName == "mZ1") and TestVar:
                 cleaned_jets = _cleaned_vbs_jets(
                     event,
                     [lep_1.Eta(), lep_2.Eta(), etaL3],
                     [lep_1.Phi(), lep_2.Phi(), phiL3],
                 )
-                for tag, min_jets in VBS_FR_JET_THRESHOLDS:
-                    if len(cleaned_jets) >= min_jets:
+                for tag, min_jets, max_jets in _fr_jet_categories(varName):
+                    if (len(cleaned_jets) >= min_jets
+                            and (max_jets is None or len(cleaned_jets) <= max_jets)):
                         _fill_fr_hist_set(
                             jet_fr_hists[tag],
                             idL3,

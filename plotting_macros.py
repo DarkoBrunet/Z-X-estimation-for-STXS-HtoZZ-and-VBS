@@ -1,8 +1,9 @@
+import argparse
 import ROOT
 import math
 import os
 from ROOT import TColor
-from analyzeZX import setCavasAndStyles, m4l_plot_config, VBS
+from analyzeZX import setCavasAndStyles, m4l_plot_config, VBS, MZ1_JET_CATEGORIES
 _EOS_USER = "/eos/user/b/brunetd"
 HTOZZ_EOS_DIR = os.path.join(_EOS_USER, "ZplusXpython_HtoZZ2024")
 VBS_EOS_DIR = os.path.join(_EOS_USER, "ZpXVBS2024_results")
@@ -1273,6 +1274,16 @@ def SRTotalPlot():
             c1.SaveAs(SR_PLOT_DIR + "/" + out_label + "_auto.root")
 
 
+MZ1_JET_LABELS = {
+    None: "inclusive",
+    "eq0j": "exactly 0 jets",
+    "eq1j": "exactly 1 jet",
+    "ge1j": "ge1j (#geq 1 jet)",
+    "eq2j": "exactly 2 jets",
+    "ge2j": "ge2j (#geq 2 jets)",
+}
+
+
 def _nd_process_hist_path(var_name, process_name, jet_tag=None):
     if jet_tag is None:
         if process_name == "Data":
@@ -1344,6 +1355,12 @@ def PlotNDProcess(Type, VarP, jet_tag=None):
         entry.SetMarkerStyle(21)
         entry.SetMarkerSize(1)
         entry.SetTextFont(62)
+        if (VarP == "mZ1"):
+            mode_label = "VBS" if VBS else "HtoZZ"
+            entry = leg.AddEntry(
+                ROOT.nullptr, mode_label + " Z+1L: " + MZ1_JET_LABELS[jet_tag], ""
+            )
+            entry.SetTextFont(42)
         entry=leg.AddEntry(ROOT.nullptr,"Data","LP")
         entry.SetLineColor(1)
         entry.SetLineStyle(1)
@@ -1601,6 +1618,12 @@ def PlotNDMatched(Type, VarP, jet_tag=None):
         entry.SetMarkerStyle(21)
         entry.SetMarkerSize(1)
         entry.SetTextFont(62)
+        if (VarP == "mZ1"):
+            mode_label = "VBS" if VBS else "HtoZZ"
+            entry = leg.AddEntry(
+                ROOT.nullptr, mode_label + " Z+1L: " + MZ1_JET_LABELS[jet_tag], ""
+            )
+            entry.SetTextFont(42)
         
         _file1 = ROOT.TFile(_nd_process_hist_path(VarP, "Data", jet_tag), "READ")
 
@@ -2081,6 +2104,13 @@ def PlotFRvsMZ1():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Draw Z+X analysis plots")
+    parser.add_argument(
+        "--var", choices=("all", "ptl3", "mZ1", "mEt"), default="all",
+        help="Draw only this variable; mZ1/mEt do not read stage-2 outputs",
+    )
+    args = parser.parse_args()
+
     for output_dir in (
         CR_PLOT_DIR,
         SR_PLOT_DIR,
@@ -2094,25 +2124,32 @@ if __name__ == "__main__":
 
     os.chdir(STAGE1_DIR)
 
-    CRPlot()
-    CRMatchPlot()
-    SRInputPlot()
-    SRTotalPlot()
-    SRPlot()
-    SRMatchPlot()
-    PlotFRvsPtl3()
-    PlotFRvsMZ1()
+    if args.var in ("all", "ptl3"):
+        CRPlot()
+        CRMatchPlot()
+        SRInputPlot()
+        SRTotalPlot()
+        SRPlot()
+        SRMatchPlot()
+        PlotFRvsPtl3()
+    if args.var in ("all", "mZ1"):
+        PlotFRvsMZ1()
 
-    for var in ("ptl3", "mZ1", "mEt"):
+    variables = ("ptl3", "mZ1", "mEt") if args.var == "all" else (args.var,)
+    for var in variables:
         PlotNDProcess("n", var)
         PlotNDProcess("d", var)
         PlotNDMatched("n", var)
         PlotNDMatched("d", var)
+        jet_tags = []
         if var == "ptl3":
-            for jet_tag in ("ge1j", "ge2j"):
-                if not os.path.isfile(_nd_process_hist_path(var, "Data", jet_tag)):
-                    continue
-                PlotNDProcess("n", var, jet_tag=jet_tag)
-                PlotNDProcess("d", var, jet_tag=jet_tag)
-                PlotNDMatched("n", var, jet_tag=jet_tag)
-                PlotNDMatched("d", var, jet_tag=jet_tag)
+            jet_tags = ["ge1j", "ge2j"]
+        elif var == "mZ1":
+            jet_tags = [tag for tag, _min_jets, _max_jets in MZ1_JET_CATEGORIES]
+        for jet_tag in jet_tags:
+            if not os.path.isfile(_nd_process_hist_path(var, "Data", jet_tag)):
+                continue
+            PlotNDProcess("n", var, jet_tag=jet_tag)
+            PlotNDProcess("d", var, jet_tag=jet_tag)
+            PlotNDMatched("n", var, jet_tag=jet_tag)
+            PlotNDMatched("d", var, jet_tag=jet_tag)
