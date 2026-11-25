@@ -1885,7 +1885,19 @@ def PlotFRvsPtl3():
     # (data file, WZ-removed file, output-name suffix, legend tag). The ge1j/ge2j
     # variants only exist when VBS=True; they are skipped gracefully otherwise.
     fr_variants = [
-        ("Hist_Data_ptl3_Data.root", "Hist_Data_ptl3_WZremoved.root", "", ""),
+        ("Hist_Data_ptl3_Data.root", "Hist_Data_ptl3_WZremoved.root", "", " (inclusive / nominal)"),
+        (
+            "Hist_Data_ptl3_VBSFR_eq0j_Data.root",
+            "Hist_Data_ptl3_VBSFR_eq0j_WZremoved.root",
+            "_eq0j",
+            " (exactly 0 jets)",
+        ),
+        (
+            "Hist_Data_ptl3_VBSFR_eq1j_Data.root",
+            "Hist_Data_ptl3_VBSFR_eq1j_WZremoved.root",
+            "_eq1j",
+            " (exactly 1 jet)",
+        ),
         (
             "Hist_Data_ptl3_VBSFR_ge1j_Data.root",
             "Hist_Data_ptl3_VBSFR_ge1j_WZremoved.root",
@@ -2109,10 +2121,6 @@ if __name__ == "__main__":
         "--var", choices=("all", "ptl3", "mZ1", "mEt"), default="all",
         help="Draw only this variable; mZ1/mEt do not read stage-2 outputs",
     )
-    parser.add_argument(
-        "--distributions-only", action="store_true",
-        help="Draw only Z+1L numerator/denominator distributions, without stage-2 or WZ-subtracted inputs",
-    )
     args = parser.parse_args()
 
     for output_dir in (
@@ -2128,7 +2136,7 @@ if __name__ == "__main__":
 
     os.chdir(STAGE1_DIR)
 
-    if not args.distributions_only and args.var in ("all", "ptl3"):
+    if args.var in ("all", "ptl3"):
         CRPlot()
         CRMatchPlot()
         SRInputPlot()
@@ -2136,7 +2144,7 @@ if __name__ == "__main__":
         SRPlot()
         SRMatchPlot()
         PlotFRvsPtl3()
-    if not args.distributions_only and args.var in ("all", "mZ1"):
+    if args.var in ("all", "mZ1"):
         PlotFRvsMZ1()
 
     variables = ("ptl3", "mZ1", "mEt") if args.var == "all" else (args.var,)

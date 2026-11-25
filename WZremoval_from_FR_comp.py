@@ -76,7 +76,7 @@ _write_wz_removed(
     required=True,
 )
 
-for tag in (("ge1j", "ge2j") if VBS else ()):
+for tag in (("eq0j", "eq1j", "ge1j", "ge2j") if VBS else ()):
     _write_wz_removed(
         os.path.join(
             STAGE1_DIR, "Hist_Data_ptl3_VBSFR_%s_Data.root" % tag
