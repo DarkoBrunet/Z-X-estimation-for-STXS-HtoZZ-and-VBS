@@ -211,8 +211,8 @@ MIX_VARIANTS = (
         "key": "leftover",
         "cr": "2P2F_leftover",
         "label": "2P2F mix, residual-prompt diagnostic",
-        "envelope": "2P2F mix, residual-prompt diagnostic",
-        "method": "inclusive FR, leftover prompt",
+        "envelope": "2P2F mix, leftover prompt (Z+1L: no WZ)",
+        "method": "inclusive FR, leftover prompt (Z+1L: no WZ)",
     },
     {
         "key": "combined_noprompt",
@@ -225,8 +225,8 @@ MIX_VARIANTS = (
         "key": "combined_leftover",
         "cr": "combined_leftover",
         "label": "2P2F+3P1F mix, residual-prompt diagnostic",
-        "envelope": "2P2F+3P1F mix, residual-prompt diagnostic",
-        "method": "inclusive FR, leftover prompt",
+        "envelope": "2P2F+3P1F mix, leftover prompt (Z+1L: no WZ)",
+        "method": "inclusive FR, leftover prompt (Z+1L: no WZ)",
     },
 )
 OBSOLETE_PLOT_STEMS = (
@@ -461,6 +461,8 @@ def _draw_tot_band(
     nominal,
     up,
     down,
+    combined_up,
+    combined_down,
     out_base,
     header=None,
     envelope_label="2P2F mix envelope",
@@ -476,6 +478,8 @@ def _draw_tot_band(
     ROOT.gStyle.SetOptTitle(0)
 
     graph, ymax = _band_graph(nominal, up, down)
+    combined_graph, combined_ymax = _band_graph(nominal, combined_up, combined_down)
+    ymax = max(ymax, combined_ymax)
 
     frame = nominal.Clone(os.path.basename(out_base) + "_frame")
     frame.Reset("ICES")
@@ -491,11 +495,18 @@ def _draw_tot_band(
     frame.SetMaximum(max(1.45 * ymax, 0.05))
     frame.Draw("axis")
 
-    graph.SetFillColorAlpha(ROOT.kAzure + 1, 0.45)
+    graph.SetFillColorAlpha(ROOT.kAzure + 1, 0.35)
     graph.SetFillStyle(1001)
     graph.SetLineColor(ROOT.kAzure + 2)
     graph.SetLineWidth(2)
     graph.Draw("2 same")
+    combined_graph.SetFillColorAlpha(ROOT.kOrange + 7, 0.35)
+    combined_graph.SetFillStyle(1001)
+    combined_graph.SetLineColor(ROOT.kOrange + 7)
+    combined_graph.SetLineWidth(2)
+    combined_graph.Draw("2 same")
+    graph.Draw("[] same")
+    combined_graph.Draw("[] same")
     nominal.SetLineColor(ROOT.kBlack)
     nominal.SetMarkerColor(ROOT.kBlack)
     nominal.SetMarkerStyle(20)
@@ -511,12 +522,35 @@ def _draw_tot_band(
         header or _fr_method_header("nominal", method_label)
     )
     legend.AddEntry(nominal, central_label, "LP")
-    legend.AddEntry(graph, envelope_label, "F")
+    legend.AddEntry(graph, "2P2F-only mix", "F")
+    legend.AddEntry(combined_graph, "2P2F+3P1F mix", "F")
     legend.Draw()
     _cms_prelim(canvas)
-    canvas._keep = (frame, graph, nominal, legend)
+    canvas._keep = (frame, graph, combined_graph, nominal, legend)
     canvas.SaveAs(out_base + ".pdf")
     canvas.SaveAs(out_base + ".png")
+
+
+def _draw_comparison_bands(plot_specs, out_dir, public_dir):
+    """Pair the data bands for each channel and prompt treatment."""
+    specs = {spec[3]: spec for spec in plot_specs if spec[6] == "data ZX"}
+    for channel, _flavour in CHANNELS:
+        for prompt in ("noprompt", "leftover"):
+            for suffix in ("", "_perpt"):
+                stem = "ZX_composition_band_%s_%s%s" % (channel, prompt, suffix)
+                combined_stem = "ZX_composition_band_%s_combined_%s%s" % (channel, prompt, suffix)
+                if stem not in specs and combined_stem not in specs:
+                    continue
+                if stem not in specs or combined_stem not in specs:
+                    raise RuntimeError("Missing paired composition band for " + stem)
+                nominal, up, down, _stem, header, _envelope, _central = specs[stem]
+                other, combined_up, combined_down, _stem, _header, _envelope, _central = specs[combined_stem]
+                if other is not nominal:
+                    raise RuntimeError("Composition bands have different data central histograms")
+                for plot_dir in (out_dir, public_dir):
+                    _draw_tot_band(nominal, up, down, combined_up, combined_down,
+                                   os.path.join(plot_dir, stem + "_mix_comparison"),
+                                   header=header)
 
 
 def _format_yield(value, error):
@@ -740,19 +774,7 @@ def _write_perpt_bands(fr_tag, out_dir, public_dir, channel_data=None, tot_data=
     csv_path = os.path.join(out_dir, "composition_zx_yield_per_pt.csv")
     with open(csv_path, "w") as handle:
         handle.write("\n".join(csv_rows) + "\n")
-    for plot_dir in (out_dir, public_dir):
-        _remove_obsolete_plots(plot_dir)
-        for nominal, up, down, stem, header, envelope, central in plot_specs:
-            _draw_tot_band(
-                nominal,
-                up,
-                down,
-                os.path.join(plot_dir, stem),
-                header=header,
-                envelope_label=envelope,
-                method_label="per-p_{T} FR",
-                central_label=central,
-            )
+    _draw_comparison_bands(plot_specs, out_dir, public_dir)
     print("Wrote per-pT composition bands for %s" % fr_tag)
 
 
@@ -850,6 +872,7 @@ def run_tag(fr_tag):
         )
         lines.append("")
 
+        plot_specs = []
         for variant in MIX_VARIANTS:
             flavour_F, flavour_report = _flavour_F(
                 transfer, weights, variant["cr"]
@@ -861,7 +884,6 @@ def run_tag(fr_tag):
             channel_cr = []
             mc_n_z1l = []
             mc_n_cr = []
-            plot_specs = []
             for channel, flavour in CHANNELS:
                 f_z1l = flavour_F[flavour]["F_z1l"]
                 f_cr = flavour_F[flavour]["F_cr"]
@@ -1047,18 +1069,7 @@ def run_tag(fr_tag):
                     "data ZX",
                 )
             )
-            for plot_dir in (out_dir, public_dir):
-                for nominal, up, down, stem, header, envelope, central in plot_specs:
-                    _draw_tot_band(
-                        nominal,
-                        up,
-                        down,
-                        os.path.join(plot_dir, stem),
-                        header=header,
-                        envelope_label=envelope,
-                        method_label=variant["method"],
-                        central_label=central,
-                    )
+        _draw_comparison_bands(plot_specs, out_dir, public_dir)
     finally:
         data_file.Close()
         zz_file.Close()
