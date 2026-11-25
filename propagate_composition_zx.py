@@ -534,11 +534,14 @@ def _draw_tot_band(
 def _draw_comparison_bands(plot_specs, out_dir, public_dir):
     """Pair the data bands for each channel and prompt treatment."""
     specs = {spec[3]: spec for spec in plot_specs if spec[6] == "data ZX"}
-    for channel, _flavour in CHANNELS:
+    for channel in [item[0] for item in CHANNELS] + [None]:
         for prompt in ("noprompt", "leftover"):
             for suffix in ("", "_perpt"):
-                stem = "ZX_composition_band_%s_%s%s" % (channel, prompt, suffix)
-                combined_stem = "ZX_composition_band_%s_combined_%s%s" % (channel, prompt, suffix)
+                prefix = "ZX_composition_band_"
+                if channel:
+                    prefix += channel + "_"
+                stem = prefix + prompt + suffix
+                combined_stem = prefix + "combined_" + prompt + suffix
                 if stem not in specs and combined_stem not in specs:
                     continue
                 if stem not in specs or combined_stem not in specs:
